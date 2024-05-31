@@ -15,7 +15,7 @@ bnb4bit=${QUANT:-false}                                     #4bit quantization
 
 ############## 
 # generate 
-header="python -m tutoreval.generate"
+header="python -m generate"
 args=(
     --model ${model}
     --output_dir ${output_dir}
@@ -54,7 +54,7 @@ fi
 
 
 # merge files
-header="python -m tutoreval.merge_generations"
+header="python -m merge_generations"
 merge_args=(
     --model ${model} 
     --dir ${output_dir} 
