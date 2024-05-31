@@ -126,6 +126,7 @@ if __name__ == "__main__":
     parser.add_argument("--tokenizer", type=str, default="meta-llama/Llama-2-7b-hf", help="Choose the HF tokenizer")
     parser.add_argument("--stem_only", action="store_true", help="Tokenize only STEM domains")
     parser.add_argument("--save_dir", type=str, default="data/tokenized_tutorchat_llama", help="Directory for saving the HF dataset")
+    parser.add_argument("--save_dir2", type=str, default="data/tokenized_tutorchat_stem_llama", help="Directory for saving the HF dataset")
     args = parser.parse_args()
 
     if args.stem_only:
@@ -133,7 +134,7 @@ if __name__ == "__main__":
     else:
         domains = []
 
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, use_auth_token='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')
     rng = random.Random(4)
 
 
@@ -151,3 +152,7 @@ if __name__ == "__main__":
     })
     
     tokenized.save_to_disk(args.save_dir)
+    
+    if args.stem_only:
+        tokenized_stem = DatasetDict({"train": train, "validation": validation})
+        tokenized_stem.save_to_disk(args.save_dir2)
