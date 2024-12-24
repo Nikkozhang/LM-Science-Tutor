@@ -1,6 +1,6 @@
 #!/bin/bash
 
-export OPENAI_API_KEY="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"                                    #your api keys go here
+export OPENAI_API_KEY="API_KEY"                                    #your api keys go here
 
 model=${MOD:-"princeton-nlp/Llemma-7B-32K-MathMix"}         #model to evaluate
 hf_chat_template=${CHATTEMPLATE:-true}

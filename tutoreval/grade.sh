@@ -1,7 +1,7 @@
 #!/bin/bash
 
 
-export OPENAI_API_KEY="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"                                   # your api key goes here
+export OPENAI_API_KEY="API_KEY"                                   # your api key goes here
 
 model=${MOD:-"princeton-nlp/Llemma-7B-32K-MathMix"}
 closedbook=${CLOSEDBOOK:-false}
