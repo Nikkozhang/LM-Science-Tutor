@@ -7,26 +7,19 @@ from utils.openai_utils import OpenAI
 from transformers import AutoTokenizer, AutoConfig, AutoModelForCausalLM, BitsAndBytesConfig
 from utils.generation_utils import generation_utils
 from datasets import load_dataset, load_from_disk
-from datasets import Dataset, DatasetDict
 import torch
-import pandas as pd
-from vllm import LLM, SamplingParams
+
 
 
 def generate_answers(data, template, model, tokenizer=None):
     outputs = []
     for sample in tqdm(data):
-        #chapters = sample["chapter"]
-        questions = sample["query"]
+        chapters = sample["chapter"]
+        questions = sample["question"]
         sample["template"] = [template]*len(questions)
-        #query = [template.replace("{{QUESTION}}", q).replace("{{CHAPTER}}", c) for (q,c) in zip(questions, chapters)]
-        query = [template.replace("{{QUESTION}}", q) for q in questions]
+        query = [template.replace("{{QUESTION}}", q).replace("{{CHAPTER}}", c) for (q,c) in zip(questions, chapters)]
 
-        if args.vllm:
-            sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
-            # model = LLM(model="princeton-nlp/Llemma-7B-32K-MathMix")
-            response = model.generate(query, sampling_params)
-        elif "openai/gpt" in args.model:
+        if "openai/gpt" in args.model:
             assert args.batch_size == 1
             response = [model.complete(query)]
         elif args.togetherapi:
@@ -41,7 +34,6 @@ def generate_answers(data, template, model, tokenizer=None):
                 out = model.generate(inputs=inputs["input_ids"], attention_mask = inputs["attention_mask"], pad_token_id=tokenizer.eos_token_id, stopping_criteria=stop, max_new_tokens=800)
             out = out[: , inputs["input_ids"].shape[1]:]
             response = tokenizer.batch_decode(out, skip_special_tokens=True)
-        sample['query'] = query
         sample["output"] = response
         sample["model"] =[args.model]*len(questions)
         sample["closedbook_eval"] = [args.closedbook]*len(questions)
@@ -63,31 +55,26 @@ if __name__ == "__main__":
     parser.add_argument("--ddp_worldsize", default=1, type=int, help="For data parallel. Sets the number of parallel instances")
     parser.add_argument("--ddp_rank", default=0, type=int, help="For data parallel. Set this to the data fragment to use for generation. Value should be in range(args.ddp_worldsize)")
     parser.add_argument("--bnb4bit", action="store_true", help="Use 4 bit quantization")
-    parser.add_argument("--vllm", action="store_true", help="use vLLM for generation")
     
     args = parser.parse_args()
 
 
     # load data
-    # try:
-    #     data = load_dataset("princeton-nlp/TutorEval")["train"]
-    # except:
-    #     try:    
-    #         data = load_from_disk("tutoreval/tutoreval_dataset/train")
-    #     except:
-    #         print("Please download the dataset from princeton-nlp/TutorEval and save it under tutoreval/tutoreval_dataset")
-    #         exit()
-    # data = pd.read_csv('test_question4.csv')
-    # data = Dataset.from_dict(data)
-    data = load_dataset("meta-math/MetaMathQA")['train']
-
+    try:
+        data = load_dataset("princeton-nlp/TutorEval")["train"]
+    except:
+        try:    
+            data = load_from_disk("tutoreval/tutoreval_dataset/train")
+        except:
+            print("Please download the dataset from princeton-nlp/TutorEval and save it under tutoreval/tutoreval_dataset")
+            exit()
 
     if args.closedbook:
-        #data = data.filter(lambda x: x["closed_book"])
-        with open("templates/closedbook_generation_template2.txt", "r") as f:
+        data = data.filter(lambda x: x["closed_book"])
+        with open("tutoreval/templates/closedbook_generation_template.txt", "r") as f:
             template = f.read()
     else:
-        with open("./templates/generation_template.txt", "r") as f:
+        with open("tutoreval/templates/generation_template.txt", "r") as f:
             template = f.read()
 
     if args.ddp_worldsize > 1:
@@ -96,11 +83,7 @@ if __name__ == "__main__":
     data = torch.utils.data.DataLoader(data, batch_size = args.batch_size, shuffle=False)
 
 
-    if args.vllm:
-        model = LLM(model=args.model)
-        tokenizer = None
-        
-    elif "openai/gpt" in args.model:                                              # openai api
+    if "openai/gpt" in args.model:                                              # openai api
         # examples: openai/gpt-3.5-turbo-16k openai/gpt-4-1106-preview
         engine=args.model.split("/")[1]
         print(engine)
@@ -124,7 +107,7 @@ if __name__ == "__main__":
         if args.rope_theta != -1:
             config.rope_theta=args.rope_theta
             print(f"Setting RoPE theta = {args.rope_theta}")
-        tokenizer = AutoTokenizer.from_pretrained(args.model, use_auth_token='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')
+        tokenizer = AutoTokenizer.from_pretrained(args.model)
         tokenizer.pad_token = tokenizer.eos_token
 
         if args.bnb4bit:
@@ -134,16 +117,16 @@ if __name__ == "__main__":
                 config=config,
                 quantization_config=quantization_config,
                 torch_dtype=torch.bfloat16,
-                device_map="auto"
-#                attn_implementation="flash_attention_2"
+                device_map="auto",
+                attn_implementation="flash_attention_2"
                 )
         else:
             model = AutoModelForCausalLM.from_pretrained(
                 args.model, 
                 config=config,
                 torch_dtype=torch.bfloat16,
-                device_map="auto"
-     #           attn_implementation="flash_attention_2"
+                device_map="auto",
+                attn_implementation="flash_attention_2"
                 )            
 
         model.eval()

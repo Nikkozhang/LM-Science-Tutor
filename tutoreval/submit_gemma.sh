@@ -12,6 +12,10 @@
 #SBATCH --export=ALL,IS_REMOTE=1
 
 export HF_HOME=/share/data/mei-work/nikkozhang/LM-Science-Tutor/huggingface_cache
+export HUGGINGFACE_TOKEN="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"
+
+# Add token to Hugging Face environment
+huggingface-cli login --token $HUGGINGFACE_TOKEN
 
 # Run the script
 srun --exclusive --gpu-bind=map_gpu:0,1,2,3,4,5,6,7 python generate_save_every1000.py --model google/gemma-7b --closedbook --ddp_worldsize 8 --ddp_rank $SLURM_PROCID --vllm

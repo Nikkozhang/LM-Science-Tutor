@@ -1,17 +1,16 @@
 #!/bin/bash
 
 
-export OPENAI_API_KEY="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"                                   # your api key goes here
+export OPENAI_API_KEY=""                                   # your api key goes here
 
 model=${MOD:-"princeton-nlp/Llemma-7B-32K-MathMix"}
 closedbook=${CLOSEDBOOK:-false}
 grader=${GRADER:-"gpt-4-1106-preview"}
-dir=${DIR:-"generations"}
-input_file="openbook/princeton-nlp/OpenBook_AnswerInChapter.json"
+dir=${DIR:-"tutoreval/generations"}
 ddp_worldsize=${DDP:-1}                                    #data parallel uses the splits created during generation. Split the generations files if you want to grade faster.
 
 
-header="python -m grade"
+header="python -m tutoreval.grade"
 args=(
     --model ${model}
     --grader ${grader}
@@ -35,7 +34,7 @@ else
     done
     wait
     # merge graded files
-    header="python -m merge_generations"
+    header="python -m tutoreval.merge_generations"
     merge_args=(
         --model ${model} 
         --output_dir ${output_dir} 
@@ -51,16 +50,16 @@ else
 fi
 
 
-header="python -m get_results"
+header="python -m tutoreval.get_results"
 args=(
-    --dir ${dir}
+    --output_dir ${dir}
     --results_dir tutoreval/results
     --model ${model}
     $@
 )
 
-if [ $closedbook == true ]; then
+if [ ${closedbook} == true ]; then
     args+=(--closedbook)
 fi
 
-${header} "${merge_args[@]}"  
+${header} "${args[@]}"  
