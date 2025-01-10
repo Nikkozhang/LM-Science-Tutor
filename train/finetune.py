@@ -7,7 +7,7 @@ from transformers import (
 )
 from datasets import load_dataset, Dataset
 import torch
-from peft import LoraConfig, LoraModel
+from peft import LoraConfig, get_peft_model
 from huggingface_hub import HfApi
 
 def tokenize_function(examples):
@@ -26,6 +26,9 @@ def tokenize_function(examples):
     return inputs
 
 if __name__ == "__main__":
+    # Set tokenizers parallelism explicitly
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--model", default="princeton-nlp/Llemma-7B-32K-MathMix", type=str, help="Generator model")
@@ -39,6 +42,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # DDP setup if needed
     if args.ddp_worldsize > 1:
         torch.distributed.init_process_group(
             backend='nccl',
@@ -46,100 +50,120 @@ if __name__ == "__main__":
             world_size=args.ddp_worldsize,
             rank=args.ddp_rank
         )
-        torch.cuda.set_device(args.ddp_rank)
-        args.device = torch.device(f'cuda:{args.ddp_rank}')
+        local_rank = args.ddp_rank
+    else:
+        local_rank = 0
 
     # Load dataset
     dataset = load_dataset("Nikkozhang/LMTutor")['train']
 
     # Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model)
+    if not tokenizer.pad_token:
+        tokenizer.pad_token = tokenizer.eos_token
     
     # Tokenize dataset
-    tokenized_dataset = dataset.map(tokenize_function, batched=True, remove_columns=['output', 'original_question', 'response'])
-    train_dataset = torch.utils.data.DataLoader(tokenized_dataset, batch_size=args.batch_size, shuffle=True)
-
-    # LoRA Configuration and Model Initialization
-    target_modules = [
-        "transformer.h.30.self_attn.q_proj", 
-        "transformer.h.30.self_attn.k_proj", 
-        "transformer.h.30.self_attn.v_proj", 
-        "transformer.h.30.self_attn.o_proj", 
-        "transformer.h.30.mlp.gate_proj", 
-        "transformer.h.30.mlp.up_proj", 
-        "transformer.h.30.mlp.down_proj", 
-        "transformer.h.31.self_attn.q_proj", 
-        "transformer.h.31.self_attn.k_proj", 
-        "transformer.h.31.self_attn.v_proj", 
-        "transformer.h.31.self_attn.o_proj", 
-        "transformer.h.31.mlp.gate_proj", 
-        "transformer.h.31.mlp.up_proj", 
-        "transformer.h.31.mlp.down_proj"
-    ]
-
-    lora_config = LoraConfig(
-        r=8, 
-        lora_alpha=16, 
-        target_modules=target_modules, 
-        lora_dropout=0.1,
-        bias="none"
+    tokenized_dataset = dataset.map(
+        tokenize_function, 
+        batched=True, 
+        remove_columns=dataset.column_names,
+        num_proc=4  # Added explicit num_proc
     )
+
+    # Convert dataset to torch format
+    tokenized_dataset.set_format(type='torch', columns=['input_ids', 'attention_mask', 'labels'])
+
+    # Model configuration
+    target_modules = [
+        "model.layers.30.self_attn.q_proj",
+        "model.layers.30.self_attn.k_proj",
+        "model.layers.30.self_attn.v_proj",
+        "model.layers.30.self_attn.o_proj",
+        "model.layers.30.mlp.gate_proj",
+        "model.layers.30.mlp.up_proj",
+        "model.layers.30.mlp.down_proj",
+        "model.layers.31.self_attn.q_proj",
+        "model.layers.31.self_attn.k_proj",
+        "model.layers.31.self_attn.v_proj",
+        "model.layers.31.self_attn.o_proj",
+        "model.layers.31.mlp.gate_proj",
+        "model.layers.31.mlp.up_proj",
+        "model.layers.31.mlp.down_proj"
+    ]
 
     config = AutoConfig.from_pretrained(args.model)
     config.max_new_tokens = 800
-    config.dtype = torch.bfloat16
-    config.do_sample = False
-    config.use_cache = True
+    config.use_cache = False  # Important for training
     
+    # Quantization and model setup
     if args.bnb4bit:
-        quantization_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
-        base_model = AutoModelForCausalLM.from_pretrained(
-            args.model,
-            config=config,
-            quantization_config=quantization_config,
-            torch_dtype=torch.bfloat16,
-            device_map="auto"
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4"
         )
     else:
-        base_model = AutoModelForCausalLM.from_pretrained(
-            args.model,
-            config=config,
-            torch_dtype=torch.bfloat16,
-            device_map="auto"
-        )
+        quantization_config = None
 
-    model = LoraModel(base_model=base_model, lora_config=lora_config)
+    # Initialize the model with proper device mapping
+    base_model = AutoModelForCausalLM.from_pretrained(
+        args.model,
+        config=config,
+        quantization_config=quantization_config,
+        device_map={"": local_rank} if torch.cuda.is_available() else None,
+        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
+    )
+
+    # LoRA configuration
+    lora_config = LoraConfig(
+        r=8,
+        lora_alpha=16,
+        target_modules=target_modules,
+        lora_dropout=0.1,
+        bias="none",
+        task_type="CAUSAL_LM"
+    )
+
+    # Get PEFT model
+    model = get_peft_model(base_model, lora_config)
     
-    # Fine-tuning section
+    # Training arguments
     training_args = TrainingArguments(
         output_dir=args.output_dir,
-        evaluation_strategy="epoch",
+        evaluation_strategy="no",
         learning_rate=2e-5,
         per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=args.batch_size,
         num_train_epochs=args.num_train_epochs,
         weight_decay=0.01,
         save_steps=10_000,
         save_total_limit=2,
         logging_dir='./logs',
         logging_steps=200,
-        push_to_hub=True,  # Add this to enable pushing to the Hugging Face hub
+        push_to_hub=True,
         hub_model_id=args.hub_model_id,
-        auto_wrap_policy=torch.distributed.fsdp.auto_wrap_policy  # Ensure coherence with DDP and auto wrapping
+        ddp_find_unused_parameters=False,
+        gradient_checkpointing=True,
+        local_rank=local_rank,
+        fp16=True if torch.cuda.is_available() else False,
+        remove_unused_columns=False
     )
 
+    # Initialize trainer
     trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=None
+        train_dataset=tokenized_dataset,
+        tokenizer=tokenizer
     )
 
+    # Training
     trainer.train()
 
-    # Save and push the fine-tuned model to the Hugging Face hub
+    # Save and push to hub
     trainer.save_model(args.output_dir)
-    trainer.push_to_hub()
+    if local_rank == 0:  # Only push from main process
+        trainer.push_to_hub()
 
     if args.ddp_worldsize > 1:
         torch.distributed.destroy_process_group()
